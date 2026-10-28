@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Империя Шаурмы</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@500;700;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #12343b;
+    --panel: #1b4750;
+    --red: #d62f2f;
+    --ivory: #fff6e3;
+    --mustard: #f2b632;
+    --muted: #8fb3b8;
+    --ok: #3ccf91;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ivory);
+    font-family: "Rubik", system-ui, sans-serif; }
+  body { max-width: 480px; margin: 0 auto; padding-bottom: 24px; user-select: none; -webkit-user-select: none; }
+
+  .awning { height: 34px; background: repeating-linear-gradient(90deg, var(--red) 0 28px, var(--ivory) 28px 56px);
+    border-radius: 0 0 18px 18px; box-shadow: 0 6px 0 rgba(0,0,0,.18); }
+
+  .top { text-align: center; padding: 22px 16px 4px; }
+  .score { font-size: 54px; font-weight: 900; line-height: 1; color: var(--mustard); }
+  .score small { display: block; font-size: 15px; font-weight: 500; color: var(--muted); margin-top: 6px; }
+
+  .stage { position: relative; display: flex; justify-content: center; padding: 14px 0 8px; }
+  #tap { width: 220px; height: 220px; border-radius: 50%; border: 0; font-size: 120px; line-height: 1;
+    background: var(--panel); box-shadow: 0 10px 0 #0e2a30, inset 0 0 0 6px var(--mustard);
+    cursor: pointer; transition: transform .06s; }
+  #tap:active, #tap.press { transform: scale(.93) translateY(4px); box-shadow: 0 4px 0 #0e2a30, inset 0 0 0 6px var(--mustard); }
+  #tap:focus-visible { outline: 3px solid var(--ivory); outline-offset: 4px; }
+
+  .pop { position: absolute; font-weight: 900; font-size: 26px; color: var(--ivory); pointer-events: none;
+    animation: rise .8s ease-out forwards; text-shadow: 0 2px 0 rgba(0,0,0,.35); }
+  @keyframes rise { to { transform: translateY(-90px); opacity: 0; } }
+
+  h2 { font-size: 17px; margin: 18px 16px 8px; font-weight: 700; }
+  .shop { display: grid; gap: 8px; padding: 0 12px; }
+  .item { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; font: inherit; color: inherit;
+    background: var(--panel); border: 0; border-radius: 14px; padding: 12px; cursor: pointer; }
+  .item:disabled { opacity: .45; cursor: default; }
+  .item:not(:disabled):active { transform: scale(.98); }
+  .item:focus-visible { outline: 3px solid var(--mustard); }
+  .ico { font-size: 30px; width: 44px; text-align: center; }
+  .info { flex: 1; min-width: 0; }
+  .name { font-weight: 700; font-size: 16px; }
+  .desc { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .buy { text-align: right; font-weight: 700; color: var(--mustard); white-space: nowrap; }
+  .buy small { display: block; font-weight: 500; color: var(--muted); font-size: 12px; }
+  .item:not(:disabled) .buy { color: var(--ok); }
+</style>
+</head>
+<body>
+  <div class="awning"></div>
+
+  <div class="top">
+    <div class="score"><span id="score">0</span><small id="rate">0 в секунду · 1 за тап</small></div>
+  </div>
+
+  <div class="stage" id="stage">
+    <button id="tap" aria-label="Сделать шаурму">🌯</button>
+  </div>
+
+  <h2>Улучшения</h2>
+  <div class="shop" id="shop"></div>
+
+<script>
+  // ---------- Настройки игры: тут можно менять цены и названия ----------
+  const UPGRADES = [
+    { id: "sauce",  ico: "🌶️", name: "Острый соус",        desc: "+1 за тап",       tap: 1,  base: 15 },
+    { id: "intern", ico: "🧑‍🍳", name: "Стажёр",             desc: "+1 в секунду",    sec: 1,  base: 50 },
+    { id: "lavash", ico: "🫓", name: "Лаваш потолще",      desc: "+5 за тап",       tap: 5,  base: 200 },
+    { id: "stall",  ico: "🏪", name: "Ларёк у метро",      desc: "+8 в секунду",    sec: 8,  base: 600 },
+    { id: "truck",  ico: "🚚", name: "Фудтрак",            desc: "+40 в секунду",   sec: 40, base: 3500 },
+    { id: "franch", ico: "🏢", name: "Франшиза по городу", desc: "+250 в секунду",  sec: 250, base: 22000 },
+  ];
+  const GROWTH = 1.15;           // на сколько дорожает каждая следующая покупка
+  const SAVE_KEY = "shaurma-empire-v1";
+  const OFFLINE_CAP_SEC = 2 * 60 * 60; // пока тебя нет, шаурма готовится максимум 2 часа
+
+  // ---------- Telegram ----------
+  const tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  // ---------- Состояние и сохранение ----------
+  let state = { score: 0, owned: {}, last: Date.now() };
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (raw) state = Object.assign(state, JSON.parse(raw));
+  } catch (e) { /* если сохранения нет, начинаем с нуля */ }
+
+  const save = () => {
+    state.last = Date.now();
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(state)); } catch (e) {}
+  };
+
+  const count = id => state.owned[id] || 0;
+  const cost = u => Math.floor(u.base * Math.pow(GROWTH, count(u.id)));
+  const perTap = () => 1 + UPGRADES.reduce((s, u) => s + (u.tap || 0) * count(u.id), 0);
+  const perSec = () => UPGRADES.reduce((s, u) => s + (u.sec || 0) * count(u.id), 0);
+
+  const fmt = n => n < 10000 ? Math.floor(n).toLocaleString("ru-RU")
+    : new Intl.NumberFormat("ru-RU", { notation: "compact", maximumFractionDigits: 2 }).format(n);
+
+  // доход за время, пока игрок был не в игре
+  const away = Math.min((Date.now() - state.last) / 1000, OFFLINE_CAP_SEC);
+  if (away > 5) state.score += away * perSec();
+
+  // ---------- Отрисовка ----------
+  const $score = document.getElementById("score");
+  const $rate = document.getElementById("rate");
+  const $shop = document.getElementById("shop");
+  const $tap = document.getElementById("tap");
+  const $stage = document.getElementById("stage");
+
+  const items = {};
+  UPGRADES.forEach(u => {
+    const b = document.createElement("button");
+    b.className = "item";
+    b.innerHTML = `<span class="ico">${u.ico}</span>
+      <span class="info"><div class="name"></div><div class="desc">${u.desc}</div></span>
+      <span class="buy"></span>`;
+    b.onclick = () => buy(u);
+    $shop.appendChild(b);
+    items[u.id] = b;
+  });
+
+  function render() {
+    $score.textContent = fmt(state.score);
+    $rate.textContent = `${fmt(perSec())} в секунду · ${fmt(perTap())} за тап`;
+    UPGRADES.forEach(u => {
+      const b = items[u.id], c = cost(u);
+      b.querySelector(".name").textContent = u.name + (count(u.id) ? ` · ${count(u.id)} шт.` : "");
+      b.querySelector(".buy").innerHTML = `${fmt(c)} 🌯`;
+      b.disabled = state.score < c;
+    });
+  }
+
+  function buy(u) {
+    const c = cost(u);
+    if (state.score < c) return;
+    state.score -= c;
+    state.owned[u.id] = count(u.id) + 1;
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+    save(); render();
+  }
+
+  function tap(e) {
+    const gain = perTap();
+    state.score += gain;
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+    const pop = document.createElement("div");
+    pop.className = "pop";
+    pop.textContent = "+" + fmt(gain);
+    pop.style.left = (50 + (Math.random() * 30 - 15)) + "%";
+    pop.style.top = "30%";
+    $stage.appendChild(pop);
+    setTimeout(() => pop.remove(), 800);
+    render();
+  }
+  $tap.addEventListener("pointerdown", tap);
+  $tap.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); tap(); } });
+
+  // каждую секунду: пассивный доход и автосохранение
+  setInterval(() => { state.score += perSec(); save(); render(); }, 1000);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) save(); });
+
+  render();
+</script>
+</body>
+</html>
